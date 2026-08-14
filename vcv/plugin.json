@@ -1,0 +1,24 @@
+{
+  "slug": "DoubleDeck",
+  "version": "2.0.0",
+  "license": "GPL-3.0-or-later",
+  "name": "Double Deck",
+  "brand": "Double Deck",
+  "author": "Luca Casarotti",
+  "authorEmail": "lucacasarotti@gmail.com",
+  "sourceUrl": "https://github.com/lcasarotti/DoubleDeck",
+  "modules": [
+    {
+      "slug": "DoubleDeck",
+      "name": "Double Deck",
+      "description": "Dual-deck looper, sampler and granulator. Port of the Synthux Academy Spotykach eurorack firmware.",
+      "tags": [
+        "Sampler",
+        "Granular",
+        "Effect",
+        "Hardware clone",
+        "Delay"
+      ]
+    }
+  ]
+}
