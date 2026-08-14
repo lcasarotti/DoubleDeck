@@ -23,6 +23,11 @@ _snap_to_cue       { false },
 _increment         { 1.f },
 _target_increment  { 1.f },
 _speed             { 1.f },
+// Non era inizializzato: in Reel (_cont_speed_mod == true) viene moltiplicato
+// per l'incremento del playhead, quindi un valore indeterminato blocca la
+// riproduzione al primo cambio di velocità. Sull'hardware non emerge perché
+// CoreUI::read_cv lo sovrascrive a ogni blocco.
+_speed_mod_mult    { 1.f },
 _trig_speed_mod_mult { 1.f },
 _speed_mode       { SpeedMode::Tape },
 _reverse          { false }

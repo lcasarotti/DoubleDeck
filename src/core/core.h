@@ -14,6 +14,10 @@
 #include "panner.h"
 #include "smooth.h"
 
+#ifdef VCV
+namespace spotykach { class BufferPool; }
+#endif
+
 namespace spotykach {
 
 enum class Route: uint8_t {
@@ -32,7 +36,11 @@ public:
   Core();
   ~Core() {}
   
+#ifdef VCV
+  void init(const float sample_rate, const float buffer_size, BufferPool& pool);
+#else
   void init(const float sample_rate, const float buffer_size);
+#endif
 
   Driver& driver() { return _driver; }
   Panner& panner() { return _panner; }

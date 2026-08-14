@@ -92,6 +92,15 @@ public:
 
     void set_feedback(const float value);
 
+#ifdef VCV
+    // Su desktop la sorgente non può essere Config::dynamic(): è un singleton
+    // globale e andrebbe condiviso fra istanze del modulo.
+    void set_slice_mono(const bool val) { _slice_mono = val; }
+    bool is_slice_mono() const { return _slice_mono; }
+#else
+    bool is_slice_mono() const { return Config::dynamic().is_slice_mono(ref); }
+#endif
+
     Track& track() { return _track; }
     Buffer& buffer() { return _buffer; }
     Generator& voxs() { return _generator; }
@@ -149,6 +158,10 @@ private:
 
     Mode _mode;
     Mode _pending_mode;
+
+#ifdef VCV
+    bool _slice_mono = false;
+#endif
 
     bool _is_armed;  
     bool _is_play_queued;

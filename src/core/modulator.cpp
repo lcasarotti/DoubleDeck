@@ -26,7 +26,9 @@ void Modulator::set_speed_norm(const float norm, const bool sync)
     _is_synced = sync;
     
     if (sync) {
-        auto ticks = kFreqDiv[std::clamp(1.f - norm, 0.f, 1.f) * kFreqDiv.size() - 1];
+        // Fix: l'espressione originale valeva -1 a norm == 1 (lettura fuori range).
+        const auto idx = static_cast<int>(std::clamp(1.f - norm, 0.f, 1.f) * kFreqDiv.size()) - 1;
+        auto ticks = kFreqDiv[std::clamp(idx, 0, static_cast<int>(kFreqDiv.size()) - 1)];
         _freq_mult = 4.f / ticks;
         _ticks_to_reset = std::max(1.f, ticks);
     }

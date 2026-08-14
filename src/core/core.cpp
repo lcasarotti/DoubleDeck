@@ -1,7 +1,11 @@
 #include "core.h"
 #include "daisysp.h"
 #include <functional>
+#ifdef VCV
+#include "buffer_pool.h" // pool su heap, per istanza
+#else
 #include "hw/buffer.sdram.h"
+#endif
 #include "mode.h"
 #include "expose.h"
 
@@ -16,17 +20,37 @@ _driver { Driver(_decks[Deck::A], _decks[Deck::B], _click, _panner, _mod.data())
     _xfade.SetStage(.5f);
 };
   
+#ifdef VCV
+void Core::init(const float sample_rate, const float callback_buffer_size, BufferPool& pool) {
+#else
 void Core::init(const float sample_rate, const float callback_buffer_size) {
+#endif
     _driver.init(sample_rate, callback_buffer_size);
     _panner.init(sample_rate);
     _click.init(sample_rate);
     _mix_smooth.init(sample_rate);
 
+#ifndef VCV
     auto& pool = SDRAMBuffer::pool();
-    auto size = pool.sourceBufferSize(); 
+#else
+    pool.reset_dispensers();
+#endif
+    auto size = pool.sourceBufferSize();
 
-    static Buffer::Frame* main_buf[Deck::Count] = { pool.sourceBuffer(), pool.sourceBuffer() };
+    // NB: su desktop questi array NON possono essere `static`: due istanze del
+    // modulo nella stessa patch condividerebbero i puntatori ai buffer.
+#ifdef VCV
+#define SPTK_POOL_STORAGE
+#else
+#define SPTK_POOL_STORAGE static
+#endif
 
+    SPTK_POOL_STORAGE Buffer::Frame* main_buf[Deck::Count] = { pool.sourceBuffer(), pool.sourceBuffer() };
+
+    // detect_buf/delay_buf sono gli unici la cui *riga* viene trattenuta
+    // (Detector::init salva il float**), quindi su desktop la storage la
+    // fornisce il pool invece dello stack di questa funzione.
+#ifndef VCV
     static float* detect_buf[Deck::Count][2] = {
         { pool.detectorBuffer(), pool.detectorBuffer() },
         { pool.detectorBuffer(), pool.detectorBuffer() }
@@ -35,12 +59,14 @@ void Core::init(const float sample_rate, const float callback_buffer_size) {
         { pool.delayBuffer(), pool.delayBuffer() },
         { pool.delayBuffer(), pool.delayBuffer() }
     };
-    static size_t* slice_buf[Deck::Count] = { 
-        pool.slices_a(), pool.slices_b() 
-    }; 
-    static Event* track_buf[Deck::Count] = { 
-        pool.track_buffer_a(), pool.track_buffer_b() 
+#endif
+    SPTK_POOL_STORAGE size_t* slice_buf[Deck::Count] = {
+        pool.slices_a(), pool.slices_b()
     };
+    SPTK_POOL_STORAGE Event* track_buf[Deck::Count] = {
+        pool.track_buffer_a(), pool.track_buffer_b()
+    };
+#undef SPTK_POOL_STORAGE
 
     for (auto d = 0; d < Deck::Count; d++) {
         auto ref = (Deck::Ref)d;
@@ -50,8 +76,13 @@ void Core::init(const float sample_rate, const float callback_buffer_size) {
         p.sample_rate = sample_rate;
         p.main_buf_size = size;
         p.main_buf = main_buf[d];
+#ifdef VCV
+        p.detect_buf = pool.detectorRow(d);
+        p.delay_buf = pool.delayRow(d);
+#else
         p.detect_buf = detect_buf[d];
         p.delay_buf = delay_buf[d];
+#endif
         p.slice_buf = slice_buf[d];
         p.track_buf = track_buf[d];
         deck(ref).init(p);
