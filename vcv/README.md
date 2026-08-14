@@ -23,9 +23,16 @@ make RACK_DIR=/percorso/di/Rack install
 ## Collaudo
 
 `test/` contiene un harness che esercita il motore **senza Rack**: registrazione
-e riproduzione, cambio di velocità durante il play, e isolamento fra due
-istanze. Molto più rapido di aprire Rack, e con i sanitizer attivi intercetta
+e riproduzione, cambio di velocità durante il play, isolamento fra due istanze,
+e riproduzione di un buffer riempito dall'esterno (la parte di motore che tocca
+l'import). Molto più rapido di aprire Rack, e con i sanitizer attivi intercetta
 problemi di memoria che a orecchio non si notano.
+
+Attenzione a una trappola: diversi membri del `Core` e del `Generator` non hanno
+un valore di default: nel modulo li scrive il primo giro di parametri, nel test
+tocca farlo a mano. Il caso peggiore è `_mix_mod`, che senza `mix_mod_in()`
+manda l'uscita a NaN — e un NaN non si vede come distorsione, si vede come
+silenzio.
 
 ```sh
 make -f test/Makefile run      # veloce
@@ -72,8 +79,32 @@ ricavato dalla lunghezza del loop si applica con un pulsante `FIT` invece che
 muovendo il knob.
 
 Fuori dalla superficie, nel menu contestuale: stato testuale dei due deck,
-slice in mono per deck, e lunghezza massima del loop (10 / 20 / 42 s), che
-rialloca il pool e reinizializza il motore.
+import di un campione e svuotamento del buffer per deck, slice in mono per
+deck, e lunghezza massima del loop (10 / 20 / 42 s), che rialloca il pool e
+reinizializza il motore.
+
+## Import di campioni
+
+Prende il posto della SD card dell'hardware. `Load sample, deck A/B` legge un
+WAV con [dr_wav](https://github.com/mackron/dr_libs), lo converte **una volta
+sola** a 48 kHz stereo (mono raddoppiato, multicanale ridotto ai primi due) e lo
+copia in `Buffer::raw()` chiudendo con `set_rec_size()`: è la stessa via che
+`src/memory/storage.cpp` usa per caricare un tape. I cue point del chunk `cue `
+finiscono nel generatore, quindi un file già affettato arriva affettato — e con
+dei cue point la `SIZE` smette di essere elevata al quadrato, per questo dopo
+l'import il parametro viene rispinto.
+
+Due conseguenze pratiche:
+
+- **Nella patch va il path, non l'audio**: 42 s stereo sono 16 MB per deck. Se
+  il file si sposta, al caricamento della patch resta scritto nel menu che non
+  si è aperto, e il path si conserva.
+- Un file più lungo del buffer viene **troncato** alla lunghezza scelta nel menu
+  (il menu lo dice: `truncated`).
+
+Il lavoro sta sul thread UI. Lettura e conversione — le parti lente — stanno
+fuori da `engineMutex`; sotto il lock resta la sola copia, e il thread audio,
+che il lock non lo aspetta mai, tace per quei pochi millisecondi.
 
 ## Come è fatto
 
@@ -106,5 +137,6 @@ Il plugin è **GPL-3.0-or-later**, obbligatorio per il linking con VCV Rack
 
 Il firmware Spotykach nella radice del repository resta **MIT**
 (© Synthux Academy — vedi `LICENSE` e `CREDITS.md` nella radice), come pure
-libDaisy e DaisySP di Electrosmith. MIT è compatibile con la GPLv3, quindi il
+libDaisy e DaisySP di Electrosmith. `src/dep/dr_wav.h` è di David Reid, public
+domain (o MIT-0, a scelta). Tutte licenze compatibili con la GPLv3, quindi il
 binario risultante è distribuito sotto GPL-3.0-or-later.

@@ -4,8 +4,11 @@ FIRMWARE_DIR := ..
 DAISYSP_DIR  := ../lib/DaisySP
 
 # Sorgenti del plugin: stanno dentro questa directory, quindi seguono la
-# mappatura standard di plugin.mk.
+# mappatura standard di plugin.mk. dr_wav è C, e resta in un'unità di
+# traduzione tutta sua: sono 9000 righe che non hanno motivo di ricompilarsi
+# insieme al resto.
 SOURCES += $(wildcard src/*.cpp)
+SOURCES += $(wildcard src/*.c)
 
 # Sorgenti fuori dalla directory del plugin (il firmware nella radice del repo
 # e DaisySP). plugin.mk fa OBJECTS := $(patsubst %,build/%.o,$(SOURCES)), quindi
@@ -27,9 +30,6 @@ OBJECTS += $(EXT_OBJECTS)
 
 FLAGS += -DVCV
 FLAGS += -Isrc/vcv
-# Il firmware si affida a include transitivi che arm-none-eabi fornisce e
-# MinGW no. Iniettarli qui evita di modificare ~30 file di src/core.
-FLAGS += -include src/vcv/portability.h
 FLAGS += -I$(FIRMWARE_DIR)
 FLAGS += -I$(FIRMWARE_DIR)/src
 FLAGS += -I$(DAISYSP_DIR)/Source
@@ -42,6 +42,10 @@ DISTRIBUTABLES += $(wildcard LICENSE*) res
 include $(RACK_DIR)/plugin.mk
 
 CXXFLAGS += -std=c++17
+# Il firmware si affida a include transitivi che arm-none-eabi fornisce e
+# MinGW no. Iniettarli qui evita di modificare ~30 file di src/core. Sta in
+# CXXFLAGS e non in FLAGS perché portability.h è C++: dr_wav.c è C.
+CXXFLAGS += -include src/vcv/portability.h
 
 build/ext/%.cpp.o: ../%.cpp
 	@mkdir -p $(@D)

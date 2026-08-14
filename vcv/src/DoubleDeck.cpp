@@ -1,8 +1,12 @@
 #include "plugin.hpp"
 
+#include <osdialog.h>
+
+#include <cstring>
 #include <mutex>
 
 #include "ParamMap.hpp"
+#include "SampleLoader.hpp"
 #include "buffer_pool.h"
 #include "core/core.h"
 #include "core/event.h"
@@ -24,6 +28,10 @@ static constexpr float kBlockSeconds = kBlock / kEngineSR;
 /// Lunghezze del buffer di loop offerte dal menu contestuale. 42 s è il valore
 /// dell'hardware e costa ~36 MB per istanza.
 static const std::vector<float> kBufferSeconds = {10.f, 20.f, 42.f};
+
+/// Estensioni accettate dall'import. Solo WAV: è quello che legge e scrive
+/// l'hardware, cue point compresi.
+static const char kSampleFilters[] = "WAV:wav,WAV";
 
 struct DoubleDeckModule : Module {
     BufferPool pool;
@@ -76,6 +84,17 @@ struct DoubleDeckModule : Module {
     float bufferSeconds = 42.f;
     bool sliceMono[2] = {false, false};
 
+    // --- campione importato, per deck ---
+    /// Path del file, non l'audio: 42 s stereo sono 16 MB per deck, che in un
+    /// `.vcv` non ci stanno.
+    std::string samplePath[2];
+    /// Riassunto dell'ultimo import, mostrato nel menu (o l'errore, se il file
+    /// non si è aperto — tipico al caricamento di una patch che punta a un file
+    /// spostato).
+    std::string sampleInfo[2];
+    /// Ultima cartella visitata, per riaprire il dialogo dove si era rimasti.
+    std::string sampleDir;
+
     DoubleDeckModule() : pool(42.f) {
         config(PARAMS_LEN, INPUTS_LEN, OUTPUTS_LEN, LIGHTS_LEN);
         configureAll(this);
@@ -87,6 +106,10 @@ struct DoubleDeckModule : Module {
         std::lock_guard<std::mutex> lock(engineMutex);
         bufferSeconds = 42.f;
         sliceMono[0] = sliceMono[1] = false;
+        for (int d = 0; d < 2; d++) {
+            samplePath[d].clear();
+            sampleInfo[d].clear();
+        }
         pool.allocate(bufferSeconds);
         initEngine();
     }
@@ -117,10 +140,139 @@ struct DoubleDeckModule : Module {
     }
 
     void setBufferSeconds(float seconds) {
-        std::lock_guard<std::mutex> lock(engineMutex);
-        bufferSeconds = seconds;
-        pool.allocate(seconds);
-        initEngine();
+        {
+            std::lock_guard<std::mutex> lock(engineMutex);
+            bufferSeconds = seconds;
+            pool.allocate(seconds);
+            initEngine();
+        }
+        // Fuori dal lock, che non è ricorsivo: il pool nuovo è vuoto, quindi i
+        // campioni importati vanno riletti dai loro file.
+        for (int d = 0; d < 2; d++) {
+            if (!samplePath[d].empty()) reloadSample(d);
+        }
+    }
+
+    // --- Import di campioni ------------------------------------------------
+    //
+    // È la SD card dell'hardware: `Buffer::raw()` e `Buffer::set_rec_size()`
+    // sono la stessa via che usa src/memory/storage.cpp per caricare un tape.
+    // Tutto avviene sul thread UI; sotto il lock resta la sola copia, mentre
+    // lettura e conversione del file — le parti lente — stanno fuori.
+
+    /// Carica `path` nel deck `d`. Ritorna false con il motivo in `error`.
+    /// Il chiamante NON deve tenere `engineMutex`.
+    bool loadSample(int d, const std::string& path, std::string& error) {
+        SampleData data;
+        if (!loadSampleFile(path, pool.sourceBufferSize(), data, error)) {
+            // Il path non lo tocchiamo: se il deck aveva già un campione buono,
+            // un tentativo andato male non deve cancellarlo dalla patch. Nel
+            // caso opposto — patch che punta a un file spostato — il path è già
+            // quello, e resta.
+            sampleInfo[d] = system::getFilename(path) + " — " + error;
+            return false;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(engineMutex);
+            auto& deck = core.deck((Deck::Ref)d);
+
+            // Niente lettura né scrittura mentre il contenuto cambia sotto.
+            // Nota: in Slice un rec appena armato resta accodato al prossimo
+            // quarto anche dopo `disarm()` — è il comportamento del firmware
+            // (Deck::_clock_recording), non una svista di qui.
+            deck.disarm();
+            deck.stop();
+
+            auto& buffer = deck.buffer();
+            buffer.clear(); // azzera anche la coda oltre il campione
+            std::memcpy(buffer.raw(), data.frames.data(),
+                        data.frames.size() * sizeof(Buffer::Frame));
+
+            // I cue point si scrivono nell'array del generatore, come fa Card
+            // in fase di lettura: `add_cue()` prenderebbe la posizione della
+            // testina, non quella del file.
+            auto& voxs = deck.voxs();
+            voxs.clear_cue();
+            for (size_t i = 0; i < data.cuePoints.size(); i++) {
+                voxs.cue_points()[i] = data.cuePoints[i];
+            }
+            *voxs.cue_count() = (uint8_t)data.cuePoints.size();
+
+            buffer.set_rec_size(data.frames.size());
+            if (deck.mode() == Mode::Slice) deck.make_grid();
+
+            // Con dei cue point la size non viene più elevata al quadrato
+            // (Generator::set_size), e in ogni caso il riferimento è cambiato:
+            // i due parametri vanno rispinti perché il motore li rilegga.
+            repush(SIZE_A_PARAM + d);
+            repush(POS_A_PARAM + d);
+        }
+
+        samplePath[d] = path;
+        sampleInfo[d] = string::f("%s — %.2f s%s", system::getFilename(path).c_str(),
+                                  (float)data.frames.size() / kEngineSR,
+                                  data.truncated ? ", truncated" : "");
+        if (!data.cuePoints.empty()) {
+            sampleInfo[d] += string::f(", %d cue points", (int)data.cuePoints.size());
+        }
+        INFO("Double Deck: deck %c loaded %s (%d Hz, %d ch) -> %d frames, %d cue points%s",
+             d == 0 ? 'A' : 'B', path.c_str(), data.sourceRate, data.sourceChannels,
+             (int)data.frames.size(), (int)data.cuePoints.size(),
+             data.truncated ? ", truncated" : "");
+        return true;
+    }
+
+    /// Ricarica il file già scelto: al caricamento della patch e dopo un cambio
+    /// di lunghezza del buffer. Un file sparito non è un errore da dialogo — la
+    /// patch può venire da un'altra macchina — quindi resta scritto nel menu.
+    void reloadSample(int d) {
+        const std::string path = samplePath[d];
+        std::string error;
+        if (!loadSample(d, path, error)) {
+            WARN("Double Deck: deck %c could not load %s: %s", d == 0 ? 'A' : 'B',
+                 path.c_str(), error.c_str());
+        }
+    }
+
+    /// Voce di menu: sceglie il file e lo carica.
+    void loadSampleDialog(int d) {
+        osdialog_filters* filters = osdialog_filters_parse(kSampleFilters);
+        DEFER({ osdialog_filters_free(filters); });
+
+        char* pathC = osdialog_file(OSDIALOG_OPEN, sampleDir.empty() ? NULL : sampleDir.c_str(),
+                                    NULL, filters);
+        if (!pathC) return; // annullato
+        const std::string path = pathC;
+        std::free(pathC);
+        sampleDir = system::getDirectory(path);
+
+        std::string error;
+        if (!loadSample(d, path, error)) {
+            // Qui il file l'ha appena scelto l'utente: fallire in silenzio
+            // sarebbe incomprensibile.
+            osdialog_message(OSDIALOG_WARNING, OSDIALOG_OK,
+                             string::f("Could not load %s:\n%s",
+                                       system::getFilename(path).c_str(), error.c_str())
+                                 .c_str());
+        }
+    }
+
+    /// Svuota il buffer del deck: è anche il modo di togliere un campione
+    /// importato senza doverci registrare sopra.
+    void clearDeck(int d) {
+        {
+            std::lock_guard<std::mutex> lock(engineMutex);
+            auto& deck = core.deck((Deck::Ref)d);
+            deck.disarm();
+            deck.stop();
+            deck.buffer().clear();
+            deck.voxs().clear_cue();
+            repush(SIZE_A_PARAM + d);
+            repush(POS_A_PARAM + d);
+        }
+        samplePath[d].clear();
+        sampleInfo[d].clear();
     }
 
     // --- Parametri -------------------------------------------------------
@@ -611,6 +763,7 @@ struct DoubleDeckModule : Module {
         else s += "stopped";
         s += string::f(", loop %.2f s", deck.buffer().rec_size() / kEngineSR);
         if (!deck.track().is_empty()) s += ", sequence recorded";
+        if (!sampleInfo[d].empty()) s += ", sample " + sampleInfo[d];
         return s;
     }
 
@@ -619,15 +772,40 @@ struct DoubleDeckModule : Module {
         json_object_set_new(root, "bufferSeconds", json_real(bufferSeconds));
         json_object_set_new(root, "sliceMonoA", json_boolean(sliceMono[0]));
         json_object_set_new(root, "sliceMonoB", json_boolean(sliceMono[1]));
+        // Del campione si salva il path, non l'audio.
+        for (int d = 0; d < 2; d++) {
+            if (samplePath[d].empty()) continue;
+            json_object_set_new(root, d == 0 ? "samplePathA" : "samplePathB",
+                                json_string(samplePath[d].c_str()));
+        }
         return root;
     }
 
     void dataFromJson(json_t* root) override {
         if (json_t* j = json_object_get(root, "sliceMonoA")) sliceMono[0] = json_boolean_value(j);
         if (json_t* j = json_object_get(root, "sliceMonoB")) sliceMono[1] = json_boolean_value(j);
+
+        // I path si leggono prima della lunghezza del buffer: se questa cambia,
+        // è la riallocazione stessa a rileggere i file, e non li carichiamo due
+        // volte.
+        for (int d = 0; d < 2; d++) {
+            json_t* j = json_object_get(root, d == 0 ? "samplePathA" : "samplePathB");
+            samplePath[d] = j ? json_string_value(j) : "";
+        }
+
+        bool reallocated = false;
         if (json_t* j = json_object_get(root, "bufferSeconds")) {
             const float s = json_number_value(j);
-            if (s > 0.f && s != bufferSeconds) setBufferSeconds(s);
+            if (s > 0.f && s != bufferSeconds) {
+                setBufferSeconds(s);
+                reallocated = true;
+            }
+        }
+
+        if (!reallocated) {
+            for (int d = 0; d < 2; d++) {
+                if (!samplePath[d].empty()) reloadSample(d);
+            }
         }
     }
 
@@ -874,6 +1052,19 @@ struct DoubleDeckWidget : ModuleWidget {
         menu->addChild(new MenuSeparator);
         menu->addChild(createMenuLabel(m->deckStatus(0)));
         menu->addChild(createMenuLabel(m->deckStatus(1)));
+
+        // Import: sostituisce la SD card dell'hardware. Nella patch finisce il
+        // path, non l'audio, quindi il file deve restare dov'è.
+        menu->addChild(new MenuSeparator);
+        for (int d = 0; d < 2; d++) {
+            const std::string n = d == 0 ? ", deck A" : ", deck B";
+            menu->addChild(createMenuItem("Load sample" + n, m->sampleInfo[d],
+                                          [=]() { m->loadSampleDialog(d); }));
+        }
+        for (int d = 0; d < 2; d++) {
+            const std::string n = d == 0 ? ", deck A" : ", deck B";
+            menu->addChild(createMenuItem("Clear buffer" + n, "", [=]() { m->clearDeck(d); }));
+        }
 
         menu->addChild(new MenuSeparator);
         menu->addChild(createBoolPtrMenuItem("Deck A slices in mono", "", &m->sliceMono[0]));
