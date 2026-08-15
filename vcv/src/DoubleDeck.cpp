@@ -815,13 +815,22 @@ struct DoubleDeckModule : Module {
     static constexpr int kTempoMirrorBlocks = 8;
 };
 
+float dd::SizeQuantity::seconds()
+{
+    if (auto* m = dynamic_cast<DoubleDeckModule*>(module)) return m->sizeSeconds(deck);
+    return 0.f;
+}
+
 std::string dd::SizeQuantity::getDisplayValueString()
 {
-    if (auto* m = dynamic_cast<DoubleDeckModule*>(module)) {
-        const float sec = m->sizeSeconds(deck);
-        if (sec > 0.f) return string::f("%.2f s", sec);
-    }
+    const float sec = seconds();
+    if (sec > 0.f) return string::f("%.2f", sec);
     return ParamQuantity::getDisplayValueString();
+}
+
+std::string dd::SizeQuantity::getUnit()
+{
+    return seconds() > 0.f ? " s" : ParamQuantity::getUnit();
 }
 
 // --- Pannello -------------------------------------------------------------

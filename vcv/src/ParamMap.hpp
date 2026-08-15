@@ -175,10 +175,16 @@ struct KeyIntervalQuantity : ParamQuantity {
 };
 
 /// SIZE: in percentuale non dice molto; con un loop registrato la lunghezza in
-/// secondi sì. Il corpo sta in DoubleDeck.cpp, dove il tipo del modulo è noto.
+/// secondi sì. L'unità segue il valore, altrimenti `Quantity::getString()`
+/// appiccica il "%" ai secondi. Il corpo sta in DoubleDeck.cpp, dove il tipo
+/// del modulo è noto.
 struct SizeQuantity : ParamQuantity {
     int deck = 0;
     std::string getDisplayValueString() override;
+    std::string getUnit() override;
+
+    /// Lunghezza della finestra in secondi, 0 se il deck è vuoto.
+    float seconds();
 };
 
 /// Dichiara l'intera superficie. Chiamata dal costruttore del modulo.
