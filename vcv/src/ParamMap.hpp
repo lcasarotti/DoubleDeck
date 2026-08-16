@@ -16,6 +16,7 @@
 
 #include <rack.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <string>
@@ -73,6 +74,10 @@ enum ParamId {
     CLICK_MIX_PARAM,
     PAN_SPEED_PARAM,
     PAN_RANGE_PARAM,
+    // Fuori dal gruppo del clock, a cui appartiene, perché Rack salva i
+    // parametri per indice: aggiungerlo in mezzo cambierebbe di posto tutti
+    // quelli sotto e le patch già salvate leggerebbero i valori sbagliati.
+    CLOCK_PPQN_PARAM,
     PARAMS_LEN
 };
 
@@ -137,6 +142,24 @@ inline float snappedSpeed(const float v)
     return kSpeedSteps[idx];
 }
 
+/// La curva che il motore applica a velocità e ampiezza del modulatore.
+/// Copia di `curved_value` in src/core/lfo.h, che qui non è includibile perché
+/// tira dentro daisysp.h.
+inline float curvedValue(float norm)
+{
+    norm = norm < .5f ? 1.5f * norm / (norm + 1.f) : norm * norm * .6666666667f + .334f;
+    return std::clamp(norm, 0.f, 1.f);
+}
+
+/// Estremi della frequenza dell'LFO libero, da src/core/config.h.
+static constexpr float kLFOFreqMin   = .01f;
+static constexpr float kLFOFreqRange = 11.99f;
+
+/// Impulsi per quarto accettabili sull'ingresso di clock. Solo divisori di 48
+/// (`kPPQNIntern`): `SynClock::SetPPQNIn` calcola 48 / ppqn in aritmetica
+/// intera, e un valore che non divide falserebbe la conversione.
+static constexpr std::array<int, 10> kClockPPQN = {1, 2, 3, 4, 6, 8, 12, 16, 24, 48};
+
 // --- Quantità con formattazione propria ---------------------------------
 //
 // Sono i valori che, letti come percentuale, non direbbero niente: intonazione,
@@ -185,6 +208,41 @@ struct SizeQuantity : ParamQuantity {
 
     /// Lunghezza della finestra in secondi, 0 se il deck è vuoto.
     float seconds();
+};
+
+/// POS: come SIZE, la percentuale è un numero senza riferimento. Con del
+/// materiale nel buffer diventa "a che secondo attacca la lettura".
+struct PosQuantity : ParamQuantity {
+    int deck = 0;
+    std::string getDisplayValueString() override;
+    std::string getUnit() override;
+
+    /// Posizione di partenza in secondi, 0 se il deck è vuoto.
+    float seconds();
+};
+
+/// MOD SPEED: due scale diverse a seconda dello switch di sync — hertz se
+/// l'LFO corre libero, suddivisione del tempo se è agganciato al clock. Una
+/// percentuale non direbbe né l'una né l'altra.
+struct ModSpeedQuantity : ParamQuantity {
+    int deck = 0;
+    bool isSynced();
+    std::string getDisplayValueString() override;
+    std::string getUnit() override;
+};
+
+/// CROSSFADE: 0 è il solo deck A, 1 il solo deck B. Detto in percentuale
+/// secca resta ambiguo su *quale* dei due sta salendo.
+struct CrossfadeQuantity : ParamQuantity {
+    std::string getDisplayValueString() override;
+    std::string getUnit() override;
+};
+
+/// LOOP LENGTH: quarti, più le battute quando il conto torna. Serve anche a
+/// non far dire "1 quarters" all'unità fissa.
+struct QuartersQuantity : ParamQuantity {
+    std::string getDisplayValueString() override;
+    std::string getUnit() override;
 };
 
 /// Dichiara l'intera superficie. Chiamata dal costruttore del modulo.

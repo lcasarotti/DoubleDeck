@@ -3,14 +3,16 @@
 #
 #   make -f test/Makefile run
 #   make -f test/Makefile run ARGS=--no-callbacks
+#   make -f test/Makefile clock
 
 FIRMWARE_DIR := ..
 DAISYSP_DIR  := ../lib/DaisySP
 
-SOURCES := test/engine_smoke.cpp
-SOURCES += $(wildcard $(FIRMWARE_DIR)/src/core/*.cpp)
-SOURCES := $(filter-out $(FIRMWARE_DIR)/src/core/cpattern.cpp,$(SOURCES))
-SOURCES += $(wildcard $(DAISYSP_DIR)/Source/*/*.cpp)
+ENGINE_SOURCES := $(wildcard $(FIRMWARE_DIR)/src/core/*.cpp)
+ENGINE_SOURCES := $(filter-out $(FIRMWARE_DIR)/src/core/cpattern.cpp,$(ENGINE_SOURCES))
+ENGINE_SOURCES += $(wildcard $(DAISYSP_DIR)/Source/*/*.cpp)
+
+SOURCES := test/engine_smoke.cpp $(ENGINE_SOURCES)
 
 FLAGS := -DVCV -std=c++17 -O2 -g
 FLAGS += -include src/vcv/portability.h
@@ -29,12 +31,21 @@ $(ASAN_BIN): $(SOURCES)
 	@mkdir -p build/test
 	$(CXX) $(FLAGS) -O0 -fsanitize=address,undefined -fno-omit-frame-pointer $(SOURCES) -o $@
 
-.PHONY: run asan clean
+CLOCK_BIN := build/test/clock_sync
+
+$(CLOCK_BIN): test/clock_sync.cpp $(ENGINE_SOURCES)
+	@mkdir -p build/test
+	$(CXX) $(FLAGS) test/clock_sync.cpp $(ENGINE_SOURCES) -o $@
+
+.PHONY: run asan clock clean
 run: $(BIN)
 	./$(BIN) $(ARGS)
 
 asan: $(ASAN_BIN)
 	./$(ASAN_BIN) $(ARGS)
+
+clock: $(CLOCK_BIN)
+	./$(CLOCK_BIN) $(ARGS)
 
 clean:
 	rm -rf build/test

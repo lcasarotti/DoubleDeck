@@ -37,13 +37,18 @@ silenzio.
 ```sh
 make -f test/Makefile run      # veloce
 make -f test/Makefile asan     # AddressSanitizer + UndefinedBehaviorSanitizer
+make -f test/Makefile clock    # sincronizzazione al clock esterno
 ```
+
+`clock` è l'unico dei tre che passa o fallisce da solo: alimenta il motore con
+un clock esterno a BPM noto e verifica che i quarti battano quel tempo, per ogni
+PPQN dichiarabile. Vedi `IN PPQN` più sotto.
 
 ## La superficie di controllo
 
 Sull'hardware ventidue potenziometri servono una settantina di funzioni tramite
 cinque layer (BASE, ALT, TAP-HOLD, FLUX, GRIT). Qui i layer non ci sono: ogni
-funzione ha il suo parametro, 78 in tutto, dichiarati in
+funzione ha il suo parametro, 79 in tutto, dichiarati in
 [`src/ParamMap.cpp`](src/ParamMap.cpp) e spinti nel motore da
 `DoubleDeckModule::updateDeckParams` / `updateGlobalParams`, una volta per
 blocco — cioè alla stessa cadenza del main loop del firmware.
@@ -66,10 +71,26 @@ legge la `ParamQuantity`, non il motore. Un avvio in coda conta come già attivo
 (il pulsante non scatta indietro sotto le dita) e si distingue dalla luminosità
 della spia.
 
-**Le etichette sono interfaccia.** Nome, unità e `getDisplayValueString` di ogni
-parametro sono ciò che la vista PARAM pronuncia: l'intonazione è in rapporto e
-semitoni, il key interval in quarti e battute, la size in secondi quando c'è un
-loop registrato, il Flux in secondi e dB.
+**Le etichette sono interfaccia.** Nome, unità, `description` e
+`getDisplayValueString` di ogni parametro sono ciò che la vista PARAM pronuncia,
+e sono l'unica interfaccia per chi non vede il pannello. Dove una percentuale
+non direbbe niente c'è una quantità dedicata: l'intonazione in rapporto e
+semitoni, il key interval in quarti e battute, `SIZE` e `POS` in secondi quando
+c'è un loop registrato, la velocità del modulatore in hertz o in suddivisioni
+del tempo a seconda dello switch di sync, il crossfade come bilanciamento fra i
+due deck, la lunghezza del loop in quarti e battute, il Flux in secondi e dB. I
+parametri il cui nome non basta portano una `description` di una o due righe.
+
+**Il clock in entrata va dichiarato.** `IN PPQN` dice quanti impulsi per quarto
+porta `CLK IN`. Non è un dettaglio: il `Driver` ne ricava il tempo, quindi con
+il valore sbagliato il modulo gira a un multiplo esatto del tempo del mittente
+(a 4 con un clock da un impulso per quarto suona quattro volte lento). Il
+default è **1**, la convenzione più diffusa fra i moduli di clock di Rack;
+l'hardware usa 4 sul suo jack, e il MIDI 24. I valori offerti sono i divisori di
+48 (`kPPQNIntern`), perché `SynClock` fa `48 / ppqn` in aritmetica intera.
+`CLK OUT` resta invece fisso a **24 PPQN**, come sull'hardware: non segue
+`IN PPQN`. La prova sta in
+[`test/clock_sync.cpp`](test/clock_sync.cpp) (`make -f test/Makefile clock`).
 
 Rispetto all'hardware ci sono tre differenze deliberate: entrambi i deck hanno
 tutte e quattro le forme d'onda dell'LFO (sull'hardware erano spartite fra i
@@ -123,9 +144,14 @@ rate di Rack usa due `SampleRateConverter`, bypassati quando Rack è già a
 | `buffer_pool.h` | Rimpiazzo su heap di `SDRAMBuffer`, **per istanza**: sull'hardware i buffer erano `static`, qui due moduli nella stessa patch devono restare separati. |
 | `portability.h` | Iniettato con `-include`. `src/core` conta su include transitivi che `arm-none-eabi` fornisce e MinGW no. |
 
-Il pannello è provvisorio (fase 5): l'SVG contiene solo il fondo, perché nanosvg
-non rende gli elementi `<text>` — titolo ed etichette li disegna `PanelLabel`.
-Il layout è una tabella di celle su griglia, applicata due volte per i due deck.
+Il pannello è **64 HP**: due riquadri identici per i deck e uno per i globali.
+L'SVG contiene solo la grafica, perché nanosvg non rende gli elementi `<text>`
+— titolo, nomi delle sezioni ed etichette dei controlli li disegna `PanelLabel`.
+Il layout è una tabella di celle su una griglia di 20 × 12,5 mm, applicata due
+volte per i due deck: ogni riga è una sezione (TRANSPORT, PLAYHEAD, SHAPE, MOD,
+GRIT, FLUX, SEQ, CV) e corrisponde a una fascia colorata del pannello, con il
+nome scritto in verticale nel corridoio a sinistra. Le coordinate stanno in due
+posti — l'SVG e la griglia di `DoubleDeck.cpp` — e vanno cambiate insieme.
 
 Le modifiche al firmware sono ridotte al minimo e quasi tutte sotto `#ifdef VCV`,
 così restano mergeabili con l'upstream di Synthux Academy.

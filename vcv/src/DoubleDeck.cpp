@@ -526,6 +526,19 @@ struct DoubleDeckModule : Module {
             const auto target = params[CLOCK_SOURCE_PARAM].getValue() > .5f ? Driver::Source::ts4
                                                                            : Driver::Source::internal;
             for (int i = 0; i < 3 && driver.source() != target; i++) driver.toggle_source();
+            // toggle_source riporta il PPQN atteso a quello della sorgente (4
+            // per ts4): il nostro va riscritto sopra, e per questo il blocco
+            // qui sotto deve venire dopo.
+            repush(CLOCK_PPQN_PARAM);
+        }
+
+        // Quanti impulsi per quarto porta l'ingresso di clock. Sull'hardware è
+        // implicito nella sorgente; in Rack ogni modulo di clock ha la sua
+        // convenzione, e sbagliarla fa girare il motore a un multiplo del tempo.
+        if (moved(CLOCK_PPQN_PARAM)) {
+            const int last = (int)kClockPPQN.size() - 1;
+            const int idx = clamp((int)std::round(params[CLOCK_PPQN_PARAM].getValue()), 0, last);
+            driver.set_external_ppqn((uint32_t)kClockPPQN[idx]);
         }
 
         if (pressed(TAP_PARAM) && !driver.is_external_sync()) {
@@ -750,6 +763,15 @@ struct DoubleDeckModule : Module {
         return deck.voxs().norm_size() * deck.buffer().rec_size() / kEngineSR;
     }
 
+    /// Punto d'attacco della lettura, in secondi. È il valore del parametro
+    /// riportato sul registrato, non la testina: quella la muove anche il CV,
+    /// e il knob deve dire quello che il knob comanda.
+    float posSeconds(int d) {
+        auto& deck = core.deck((Deck::Ref)d);
+        if (deck.is_empty()) return 0.f;
+        return params[POS_A_PARAM + d].getValue() * deck.buffer().rec_size() / kEngineSR;
+    }
+
     std::string deckStatus(int d) {
         auto& deck = core.deck((Deck::Ref)d);
         std::string s = d == 0 ? "Deck A: " : "Deck B: ";
@@ -765,6 +787,17 @@ struct DoubleDeckModule : Module {
         if (!deck.track().is_empty()) s += ", sequence recorded";
         if (!sampleInfo[d].empty()) s += ", sample " + sampleInfo[d];
         return s;
+    }
+
+    /// Quel che i due deck hanno in comune, per la stessa ragione: clock e
+    /// routing non hanno una spia che li dica, e sotto clock esterno il tempo
+    /// non è quello del knob.
+    std::string globalStatus() {
+        auto& driver = core.driver();
+        return string::f("Clock: %s, %.1f BPM, key %s, route %s",
+                         driver.is_external_sync() ? "external" : "internal", driver.tempo(),
+                         getParamQuantity(KEY_INTERVAL_PARAM)->getDisplayValueString().c_str(),
+                         getParamQuantity(ROUTE_PARAM)->getDisplayValueString().c_str());
     }
 
     json_t* dataToJson() override {
@@ -833,11 +866,35 @@ std::string dd::SizeQuantity::getUnit()
     return seconds() > 0.f ? " s" : ParamQuantity::getUnit();
 }
 
+float dd::PosQuantity::seconds()
+{
+    if (auto* m = dynamic_cast<DoubleDeckModule*>(module)) return m->posSeconds(deck);
+    return 0.f;
+}
+
+std::string dd::PosQuantity::getDisplayValueString()
+{
+    auto* m = dynamic_cast<DoubleDeckModule*>(module);
+    if (m && !m->core.deck((Deck::Ref)deck).is_empty()) return string::f("%.2f", seconds());
+    return ParamQuantity::getDisplayValueString();
+}
+
+std::string dd::PosQuantity::getUnit()
+{
+    auto* m = dynamic_cast<DoubleDeckModule*>(module);
+    if (m && !m->core.deck((Deck::Ref)deck).is_empty()) return " s";
+    return ParamQuantity::getUnit();
+}
+
 // --- Pannello -------------------------------------------------------------
 //
-// Layout provvisorio ma completo: ogni parametro ha il suo widget, perché uno
-// senza widget non è raggiungibile né col mouse né dalla vista PARAM. Il
-// pannello definitivo arriva in fase 5.
+// La griglia è quella disegnata in res/panels/DoubleDeck.svg: colonne da 20 mm,
+// righe da 12,5 mm, e **una riga per sezione**. Ogni fascia colorata del
+// pannello è una riga di questa tabella, così il nome della sezione sta nel
+// corridoio a sinistra invece di costare una riga sua.
+//
+// Ogni parametro ha il suo widget anche quando la posizione è di ripiego: uno
+// senza widget non è raggiungibile né col mouse né dalla vista PARAM.
 
 /// Testo disegnato dal widget: nanosvg non rende gli elementi <text>, quindi le
 /// etichette non possono stare nel pannello SVG.
@@ -845,9 +902,16 @@ struct PanelLabel : Widget {
     std::string text;
     float fontSize = 6.8f;
     NVGcolor color = nvgRGB(0xc8, 0xc8, 0xd0);
+    /// Ruotata di 90° in senso antiorario: è così che i nomi delle sezioni
+    /// stanno in un corridoio da 5 mm.
+    bool vertical = false;
 
-    PanelLabel(Vec center, const std::string& t) : text(t) {
-        box.size = Vec(60.f, 10.f);
+    PanelLabel(Vec center, const std::string& t, bool vertical = false)
+        : text(t), vertical(vertical) {
+        // Il box serve solo al test di visibilità di Widget::draw — il testo
+        // non viene ritagliato — ma se è più piccolo del testo l'etichetta
+        // sparisce quando il modulo esce a metà dalla vista.
+        box.size = vertical ? Vec(14.f, 70.f) : Vec(70.f, 14.f);
         box.pos = center.minus(box.size.div(2));
     }
 
@@ -855,11 +919,15 @@ struct PanelLabel : Widget {
         std::shared_ptr<window::Font> font
             = APP->window->loadFont(asset::system("res/fonts/ShareTechMono-Regular.ttf"));
         if (!font) return;
+        nvgSave(args.vg);
         nvgFontFaceId(args.vg, font->handle);
         nvgFontSize(args.vg, fontSize);
         nvgFillColor(args.vg, color);
         nvgTextAlign(args.vg, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
-        nvgText(args.vg, box.size.x / 2, box.size.y / 2, text.c_str(), NULL);
+        nvgTranslate(args.vg, box.size.x / 2, box.size.y / 2);
+        if (vertical) nvgRotate(args.vg, -M_PI / 2.f);
+        nvgText(args.vg, 0.f, 0.f, text.c_str(), NULL);
+        nvgRestore(args.vg);
     }
 };
 
@@ -888,91 +956,144 @@ struct Cell {
     const char* label;
 };
 
-// Griglia: colonne larghe 18 mm, righe alte 13 mm.
-constexpr float kColStep = 18.f;
-constexpr float kRowStep = 13.f;
-constexpr float kRow0 = 24.f;
-constexpr float kDeckColA = 13.f;
-constexpr float kDeckColB = 107.f;
-constexpr float kGlobalCol = 201.f;
+/// Nome di una sezione, scritto in verticale nel corridoio a sinistra del
+/// riquadro. `row` è il centro della fascia che nomina.
+struct Section {
+    float row;
+    const char* label;
+};
 
-/// Un deck: 34 parametri e 6 porte in otto righe da cinque.
+// Griglia: colonne da 20 mm, righe da 12,5 mm. Gli stessi numeri disegnano le
+// fasce in res/panels/DoubleDeck.svg.
+constexpr float kColStep = 20.f;
+constexpr float kRowStep = 12.5f;
+constexpr float kRow0 = 27.5f;
+/// Quanto sopra il controllo sta la sua etichetta. Sette millimetri sono il
+/// massimo che passa fra il bordo inferiore del controllo di sopra e il bordo
+/// superiore del testo.
+constexpr float kLabelDy = -7.f;
+
+// Colonna 0 di ciascun riquadro, e centro del corridoio delle sezioni.
+constexpr float kDeckColA = 22.f;
+constexpr float kDeckColB = 135.f;
+constexpr float kGlobalCol = 248.f;
+constexpr float kGutterA = 9.5f;
+constexpr float kGutterB = 122.5f;
+constexpr float kGutterG = 235.5f;
+
+// Centro dei tre riquadri, per le intestazioni.
+constexpr float kPaneMidA = 59.5f;
+constexpr float kPaneMidB = 172.5f;
+constexpr float kPaneMidG = 275.5f;
+constexpr float kHeaderRow = 16.4f;
+
+/// Un deck: 34 parametri, 6 porte e 2 spie. Una riga per sezione; le ultime
+/// quattro lasciano libera la quinta colonna, che è la colonna dei jack.
 const Cell kDeckCells[] = {
+    // TRANSPORT
     {0, 0, LATCH_G, PLAY_A_PARAM, PLAY_A_LIGHT, "PLAY"},
     {1, 0, LATCH_R, REC_A_PARAM, REC_A_LIGHT, "REC"},
     {2, 0, SW2, REC_SOURCE_A_PARAM, -1, "SOURCE"},
     {3, 0, SW2, REVERSE_A_PARAM, -1, "REV"},
     {4, 0, SW3, MODE_A_PARAM, -1, "MODE"},
 
+    // PLAYHEAD
     {0, 1, KNOB, POS_A_PARAM, -1, "POS"},
     {1, 1, KNOB, SIZE_A_PARAM, -1, "SIZE"},
-    {2, 1, KNOB, PITCH_A_PARAM, -1, "PITCH"},
-    {3, 1, KNOB, IO_MIX_A_PARAM, -1, "I/O MIX"},
-    {4, 1, KNOB, FEEDBACK_A_PARAM, -1, "FEEDBK"},
+    {2, 1, SNAP, START_OFFSET_A_PARAM, -1, "OFFSET"},
+    {3, 1, KNOB, PITCH_A_PARAM, -1, "PITCH"},
+    {4, 1, SW2, PITCH_QUANT_A_PARAM, -1, "QUANT"},
 
-    {0, 2, SNAP, START_OFFSET_A_PARAM, -1, "OFFSET"},
+    // SHAPE
+    {0, 2, KNOB, WINDOW_A_PARAM, -1, "WINDOW"},
     {1, 2, KNOB, ENV_SHAPE_A_PARAM, -1, "ENV"},
     {2, 2, KNOB, ENV_SIZE_A_PARAM, -1, "ENV SZ"},
-    {3, 2, KNOB, WINDOW_A_PARAM, -1, "WINDOW"},
-    {4, 2, SW2, PITCH_QUANT_A_PARAM, -1, "QUANT"},
+    {3, 2, KNOB, IO_MIX_A_PARAM, -1, "I/O MIX"},
+    {4, 2, KNOB, FEEDBACK_A_PARAM, -1, "FEEDBK"},
 
+    // MOD
     {0, 3, SW2, MOD_TYPE_A_PARAM, -1, "MOD"},
     {1, 3, SNAP, LFO_SHAPE_A_PARAM, -1, "SHAPE"},
     {2, 3, SW2, MOD_SYNC_A_PARAM, -1, "SYNC"},
     {3, 3, KNOB, MOD_SPEED_A_PARAM, -1, "CYCLE"},
     {4, 3, KNOB, MOD_AMOUNT_A_PARAM, -1, "GLOW"},
 
+    // GRIT
     {0, 4, LATCH, GRIT_ON_A_PARAM, GRIT_A_LIGHT, "GRIT"},
     {1, 4, SW2, GRIT_MODE_A_PARAM, -1, "G MODE"},
     {2, 4, KNOB, GRIT_INTENS_A_PARAM, -1, "G INT"},
     {3, 4, KNOB, GRIT_MIX_A_PARAM, -1, "G MIX"},
-    {4, 4, SW3, CV_DEST_A_PARAM, -1, "CV DST"},
 
+    // FLUX
     {0, 5, LATCH, FLUX_ON_A_PARAM, FLUX_A_LIGHT, "FLUX"},
     {1, 5, KNOB, FLUX_INTENS_A_PARAM, -1, "F TIME"},
     {2, 5, KNOB, FLUX_FB_A_PARAM, -1, "F FB"},
     {3, 5, KNOB, FLUX_MIX_A_PARAM, -1, "F MIX"},
-    {4, 5, BUTTON, TRIGGER_A_PARAM, -1, "TRIG"},
 
+    // SEQ
     {0, 6, LATCH, SEQ_ARM_A_PARAM, SEQ_A_LIGHT, "SEQ"},
     {1, 6, BUTTON, SEQ_CLEAR_A_PARAM, -1, "CLEAR"},
     {2, 6, SNAP, SIZE_QUARTERS_A_PARAM, -1, "QUARTS"},
     {3, 6, BUTTON, FIT_TEMPO_A_PARAM, -1, "FIT"},
-    {4, 6, OUT_PORT, GATE_A_OUTPUT, -1, "GATE"},
 
-    {0, 7, IN_PORT, CV_SIZE_POS_A_INPUT, -1, "SIZE/POS"},
-    {1, 7, IN_PORT, CV_MIX_A_INPUT, -1, "MIX CV"},
-    {2, 7, IN_PORT, VOCT_A_INPUT, -1, "V/OCT"},
-    {3, 7, IN_PORT, GATE_A_INPUT, -1, "GATE IN"},
+    // CV
+    {0, 7, SW3, CV_DEST_A_PARAM, -1, "CV DST"},
+    {1, 7, IN_PORT, CV_SIZE_POS_A_INPUT, -1, "SIZE/POS"},
+    {2, 7, IN_PORT, CV_MIX_A_INPUT, -1, "MIX CV"},
+    {3, 7, IN_PORT, VOCT_A_INPUT, -1, "V/OCT"},
+
+    // La colonna dei jack: il trigger a mano in cima, poi il gate che fa la
+    // stessa cosa da fuori, e le due uscite del deck.
+    {4, 4, BUTTON, TRIGGER_A_PARAM, -1, "TRIG"},
+    {4, 5, IN_PORT, GATE_A_INPUT, -1, "GATE IN"},
+    {4, 6, OUT_PORT, GATE_A_OUTPUT, -1, "GATE"},
     {4, 7, OUT_PORT, MOD_A_OUTPUT, -1, "MOD"},
 
-    {3.42f, 6.62f, LIGHT, GATE_IN_A_LIGHT, -1, ""},
-    {4.42f, 7.62f, LIGHT, MOD_A_LIGHT, -1, ""},
+    {4.32f, 4.70f, LIGHT, GATE_IN_A_LIGHT, -1, ""},
+    {4.32f, 6.70f, LIGHT, MOD_A_LIGHT, -1, ""},
 };
 
+const Section kDeckSections[] = {
+    {0, "TRANSPORT"}, {1, "PLAYHEAD"}, {2, "SHAPE"}, {3, "MOD"},
+    {4, "GRIT"},      {5, "FLUX"},     {6, "SEQ"},   {7, "CV"},
+};
+
+/// Globali: due righe di clock, due di mix, una di audio. Le righe saltate
+/// sono le fasce vuote del pannello, che separano i tre gruppi.
 const Cell kGlobalCells[] = {
     {0, 0, KNOB, TEMPO_PARAM, -1, "TEMPO"},
     {1, 0, BUTTON, TAP_PARAM, -1, "TAP"},
     {2, 0, SNAP, KEY_INTERVAL_PARAM, -1, "KEY"},
     {3, 0, SW2, CLOCK_SOURCE_PARAM, -1, "CLK SRC"},
-    {4, 0, BUTTON, CLOCK_RESET_PARAM, -1, "RESET"},
 
-    {1.42f, -0.38f, LIGHT, CLOCK_LIGHT, -1, ""},
+    // IN PPQN sta accanto all'ingresso che descrive: dice quanti impulsi per
+    // quarto ci arrivano, ed è il primo posto da guardare se il tempo non torna.
+    {0, 1, IN_PORT, CLOCK_INPUT, -1, "CLK IN"},
+    {1, 1, SNAP, CLOCK_PPQN_PARAM, -1, "IN PPQN"},
+    {2, 1, OUT_PORT, CLOCK_OUTPUT, -1, "CLK OUT"},
+    {3, 1, BUTTON, CLOCK_RESET_PARAM, -1, "RESET"},
 
-    {0, 1, SW3, ROUTE_PARAM, -1, "ROUTE"},
-    {1, 1, KNOB, CROSSFADE_PARAM, -1, "XFADE"},
-    {2, 1, KNOB, CLICK_MIX_PARAM, -1, "CLICK"},
-    {3, 1, KNOB, PAN_SPEED_PARAM, -1, "PAN SPD"},
-    {4, 1, KNOB, PAN_RANGE_PARAM, -1, "PAN RNG"},
+    // La spia dei quarti sta appesa all'ingresso di clock, come le spie di
+    // gate dei deck: lampeggia anche quando il clock è interno, quindi dice
+    // insieme il tempo e se il modulo lo sta ricevendo.
+    {0.32f, 0.70f, LIGHT, CLOCK_LIGHT, -1, ""},
 
-    {0, 3, IN_PORT, IN_L_INPUT, -1, "IN L"},
-    {1, 3, IN_PORT, IN_R_INPUT, -1, "IN R"},
-    {2, 3, IN_PORT, CV_CROSSFADE_INPUT, -1, "XFADE CV"},
-    {3, 3, IN_PORT, CLOCK_INPUT, -1, "CLOCK"},
+    {0, 3, KNOB, CROSSFADE_PARAM, -1, "XFADE"},
+    {1, 3, SW3, ROUTE_PARAM, -1, "ROUTE"},
+    {2, 3, KNOB, CLICK_MIX_PARAM, -1, "CLICK"},
+    {3, 3, IN_PORT, CV_CROSSFADE_INPUT, -1, "XFADE CV"},
 
-    {0, 4, OUT_PORT, OUT_L_OUTPUT, -1, "OUT L"},
-    {1, 4, OUT_PORT, OUT_R_OUTPUT, -1, "OUT R"},
-    {3, 4, OUT_PORT, CLOCK_OUTPUT, -1, "CLK OUT"},
+    {0, 4, KNOB, PAN_SPEED_PARAM, -1, "PAN SPD"},
+    {1, 4, KNOB, PAN_RANGE_PARAM, -1, "PAN RNG"},
+
+    {0, 6, IN_PORT, IN_L_INPUT, -1, "IN L"},
+    {1, 6, IN_PORT, IN_R_INPUT, -1, "IN R"},
+    {2, 6, OUT_PORT, OUT_L_OUTPUT, -1, "OUT L"},
+    {3, 6, OUT_PORT, OUT_R_OUTPUT, -1, "OUT R"},
+};
+
+const Section kGlobalSections[] = {
+    {0.5f, "CLOCK"}, {3.5f, "MIX"}, {6, "AUDIO"},
 };
 
 } // namespace
@@ -1026,9 +1147,28 @@ struct DoubleDeckWidget : ModuleWidget {
             }
 
             if (c.label[0] != '\0') {
-                addChild(new PanelLabel(mm2px(Vec(x, y - 6.6f)), c.label));
+                addChild(new PanelLabel(mm2px(Vec(x, y + kLabelDy)), c.label));
             }
         }
+    }
+
+    /// I nomi delle sezioni nel corridoio a sinistra del riquadro.
+    void placeSections(const Section* sections, size_t count, float gutterX) {
+        for (size_t i = 0; i < count; i++) {
+            const float y = kRow0 + sections[i].row * kRowStep;
+            auto* label = new PanelLabel(mm2px(Vec(gutterX, y)), sections[i].label, true);
+            label->fontSize = 5.6f;
+            label->color = nvgRGB(0x80, 0x80, 0x8c);
+            addChild(label);
+        }
+    }
+
+    /// Intestazione di un riquadro, sopra la prima fascia.
+    void placeHeader(float midX, const std::string& text, NVGcolor color) {
+        auto* label = new PanelLabel(mm2px(Vec(midX, kHeaderRow)), text);
+        label->fontSize = 7.4f;
+        label->color = color;
+        addChild(label);
     }
 
     DoubleDeckWidget(DoubleDeckModule* module) {
@@ -1041,17 +1181,25 @@ struct DoubleDeckWidget : ModuleWidget {
         addChild(createWidget<ScrewSilver>(
             Vec(box.size.x - 2 * RACK_GRID_WIDTH, RACK_GRID_HEIGHT - RACK_GRID_WIDTH)));
 
-        auto* title = new PanelLabel(mm2px(Vec(142.24f, 8.f)), "DOUBLE DECK");
-        title->fontSize = 14.f;
+        auto* title = new PanelLabel(mm2px(Vec(162.56f, 7.f)), "DOUBLE DECK");
+        title->fontSize = 13.f;
         addChild(title);
-        addChild(new PanelLabel(mm2px(Vec(kDeckColA + 6.f, 14.f)), "DECK A"));
-        addChild(new PanelLabel(mm2px(Vec(kDeckColB + 6.f, 14.f)), "DECK B"));
-        addChild(new PanelLabel(mm2px(Vec(kGlobalCol + 6.f, 14.f)), "GLOBAL"));
+
+        // Stesse tinte delle barrette d'accento del pannello.
+        placeHeader(kPaneMidA, "DECK A", nvgRGB(0x5b, 0x9d, 0xd9));
+        placeHeader(kPaneMidB, "DECK B", nvgRGB(0xd9, 0x9a, 0x5b));
+        placeHeader(kPaneMidG, "GLOBAL", nvgRGB(0x7f, 0xb0, 0x8a));
 
         const size_t deckCount = sizeof(kDeckCells) / sizeof(kDeckCells[0]);
         placeCells(kDeckCells, deckCount, kDeckColA, 0);
         placeCells(kDeckCells, deckCount, kDeckColB, 1);
         placeCells(kGlobalCells, sizeof(kGlobalCells) / sizeof(kGlobalCells[0]), kGlobalCol, 0);
+
+        const size_t sectionCount = sizeof(kDeckSections) / sizeof(kDeckSections[0]);
+        placeSections(kDeckSections, sectionCount, kGutterA);
+        placeSections(kDeckSections, sectionCount, kGutterB);
+        placeSections(kGlobalSections, sizeof(kGlobalSections) / sizeof(kGlobalSections[0]),
+                      kGutterG);
     }
 
     void appendContextMenu(Menu* menu) override {
@@ -1061,6 +1209,7 @@ struct DoubleDeckWidget : ModuleWidget {
         menu->addChild(new MenuSeparator);
         menu->addChild(createMenuLabel(m->deckStatus(0)));
         menu->addChild(createMenuLabel(m->deckStatus(1)));
+        menu->addChild(createMenuLabel(m->globalStatus()));
 
         // Import: sostituisce la SD card dell'hardware. Nella patch finisce il
         // path, non l'audio, quindi il file deve restare dov'è.
