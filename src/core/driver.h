@@ -78,6 +78,16 @@ public:
     void toggle_source();
     bool is_external_sync() const { return _source != Source::internal; };
 
+#ifdef VCV
+    // Sull'hardware quanti impulsi per quarto arrivano dall'esterno lo decide
+    // la sorgente: 4 dal jack di clock (Source::ts4), 24 dal MIDI. In Rack
+    // l'ingresso è uno solo e ogni modulo di clock ha la sua convenzione — la
+    // più diffusa è un impulso per quarto — quindi va scelto a parte.
+    // Da richiamare dopo toggle_source(), che riporta il valore a quello
+    // della sorgente.
+    void set_external_ppqn(const uint32_t ppqn) { _clock.SetPPQNIn(ppqn); }
+#endif
+
     void set_key_tick_interval_norm(const float); 
     uint8_t key_interval() const { return _key_tick_interval; }
     bool is_key_sub_quarter() const { return _key_tick_interval < k1_4; }
