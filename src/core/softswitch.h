@@ -13,9 +13,13 @@ namespace spotykach {
  */
 class SoftSwitch {
 public:
-  SoftSwitch(): 
+  SoftSwitch():
+  _iterator { 0 },
+  _kof { 0.f },
   _out { 0.f },
-  _stage { Stage::idle } 
+  _stage { Stage::idle },
+  // is_on() is read through Buffer::is_overdubbing() before anyone sets it.
+  _on { false }
   {}
   
   ~SoftSwitch() {}

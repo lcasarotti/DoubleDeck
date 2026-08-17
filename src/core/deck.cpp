@@ -26,7 +26,8 @@ _is_armed            { false },
 _is_play_queued      { false },
 _is_record_queued    { false },
 _is_playing          { false },
-_adjust_count        { false }
+_adjust_count        { false },
+_is_cut_queued       { false }
 {};
 void Deck::init(const Params p) 
 {
@@ -327,8 +328,13 @@ float Deck::norm_playhead_at(const uint8_t idx) const
     if (_buffer.is_empty()) return 0.f;
     return _generator.playhead_at(idx) / _buffer.rec_size();
 }
-void Deck::_resolve_playhead() 
+void Deck::_resolve_playhead()
 {
+    if (_buffer.is_empty()) { // 0/0 -> NaN, and NaN cast to int16_t is undefined
+        _loop_tick_count = -1;
+        _through_loop_ticks = -1;
+        return;
+    }
     auto count = _max_loop_ticks * static_cast<float>(_buffer.read_head()) / static_cast<float>(_buffer.rec_size());
     _loop_tick_count = count;
     _through_loop_ticks = count;

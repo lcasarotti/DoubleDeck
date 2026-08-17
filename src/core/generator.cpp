@@ -186,8 +186,17 @@ void Generator::add_cue()
 }
 void Generator::auto_cue(const size_t slice_size, const size_t slice_count)
 {
-  _slice_size = slice_size;
-  _auto_cue_max_idx = slice_count - 1;
+  /*
+  A buffer shorter than one grid step - an empty one in the first place -
+  gives slice_size and/or slice_count == 0. On size_t `slice_count - 1`
+  becomes SIZE_MAX, and then apply_dimensions() below does
+  `start_idx %= _auto_cue_max_idx + 1`, i.e. a modulo by zero. Cortex-M7
+  UDIV returns 0 for that and nobody ever noticed; it is undefined behaviour
+  all the same, and on a desktop build it is a hardware trap.
+  Clamping to a single slice at index 0 keeps the outcome the ARM one.
+  */
+  _slice_size = std::max(slice_size, size_t(1));
+  _auto_cue_max_idx = slice_count > 0 ? slice_count - 1 : 0;
   _is_auto_cue = true;
 }
 void Generator::clear_cue()

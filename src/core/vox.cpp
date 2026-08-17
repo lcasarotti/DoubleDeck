@@ -26,7 +26,8 @@ Vox::Vox():
     _win_count          { 0 },
     _is_reverse         { false },
     _is_pending         { false },
-    _is_suspended       { false }
+    _is_suspended       { false },
+    _is_wide            { false }
     {};
 
 void Vox::init(Buffer* buffer, const uint8_t vox_idx) {

@@ -12,10 +12,16 @@ _buffer         { nullptr },
 _buffer_size    { 0 },
 _feedback       { 0.95 }, //-3dB
 _size           { 0 },
+_target_length  { 0 },
 _write_head     { 0 },
 _read_head      { 0 },
 _fade_counter   { 0 },
-_state          { State::idle }
+_wrap_counter   { 0 },
+_state          { State::idle },
+// read_reset_did_cut() is consumed once per block from the very first one:
+// without a starting value the deck can see a cut that never happened, and in
+// Slice that queues a play on an empty buffer.
+_did_cut        { false }
 {};
 
 void Buffer::init(Frame* buf, size_t length) 

@@ -20,9 +20,20 @@ _click              { click },
 _panner             { panner },
 _mod                { mod },
 _source             { Source::internal },
+/*
+The four below used to rely on the driver living in .bss: without a starting
+value _quarter_tick_count counts down from whatever was in RAM, and the first
+quarter - hence the click, the quarter indication and the clock out gate - can
+be up to 127 sixteenths late. _send_clock decides which ticks leave the module,
+so garbage there sends the clock out at 48PPQN instead of 24.
+*/
+_quarter_tick_count { 0 },
 _key_tick_count     { 0 },
 _key_tick_interval  { 4 },
-_tap                { false }
+_key_tick_interval_idx { 0 },
+_is_key             { false },
+_tap                { false },
+_send_clock         { false }
 {};
 
 void Driver::init(const float sample_rate, const float buffer_size) 
