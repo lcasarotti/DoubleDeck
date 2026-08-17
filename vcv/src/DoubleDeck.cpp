@@ -4,6 +4,7 @@
 
 #include <cstring>
 #include <mutex>
+#include <new>
 
 #include "ParamMap.hpp"
 #include "SampleLoader.hpp"
@@ -33,9 +34,48 @@ static const std::vector<float> kBufferSeconds = {10.f, 20.f, 42.f};
 /// l'hardware, cue point compresi.
 static const char kSampleFilters[] = "WAV:wav,WAV";
 
+/// Il motore presume di vivere in `.bss`: sul Daisy la RAM statica è azzerata
+/// dallo startup, e diversi membri del firmware non hanno un default proprio
+/// perché quello zero c'è già (`SynClock::_external_clock`, i contatori di
+/// `Driver`, `Deck::_is_cut_queued`, buona parte di `Generator`…). La memoria di
+/// un Module di Rack è heap sporca, quindi lo stesso motore si comporta in modo
+/// diverso a ogni caricamento: `_external_clock` a caso vero, per esempio,
+/// ferma il clock interno dopo un secondo e con lui click, loop in Slice e
+/// modulatori sincronizzati.
+///
+/// Qui gli diamo la stessa condizione iniziale dell'hardware: memoria azzerata,
+/// poi costruzione al suo interno. `construct()` è anche il modo di rimettere il
+/// motore vergine su Initialize, cosa che il solo `Core::init` non fa.
+struct ZeroedEngine {
+    alignas(Core) unsigned char bytes[sizeof(Core)];
+    Core* obj = nullptr;
+
+    ZeroedEngine() { construct(); }
+    ~ZeroedEngine() { destroy(); }
+
+    ZeroedEngine(const ZeroedEngine&) = delete;
+    ZeroedEngine& operator=(const ZeroedEngine&) = delete;
+
+    /// Ricostruisce sempre allo stesso indirizzo: i riferimenti al motore
+    /// restano validi.
+    void construct() {
+        destroy();
+        std::memset(bytes, 0, sizeof(bytes));
+        obj = new (bytes) Core();
+    }
+
+    void destroy() {
+        if (obj) {
+            obj->~Core();
+            obj = nullptr;
+        }
+    }
+};
+
 struct DoubleDeckModule : Module {
     BufferPool pool;
-    Core core;
+    ZeroedEngine engine;
+    Core& core = *engine.obj;
 
     /// Protegge motore e pool contro la riallocazione richiesta dal menu, che
     /// arriva dal thread UI. Il thread audio non aspetta mai: se non riesce a
@@ -117,6 +157,11 @@ struct DoubleDeckModule : Module {
     /// Init del motore. Il chiamante tiene `engineMutex` quando il modulo è già
     /// in esecuzione.
     void initEngine() {
+        // Motore da zero, come a un boot dell'hardware: `Core::init` non
+        // riazzera ciò che il costruttore non tocca, quindi dopo un Initialize o
+        // un cambio di lunghezza del buffer resterebbe in giro lo stato vecchio.
+        engine.construct();
+
         speedMap.init();
 
         for (int i = 0; i < PARAMS_LEN; i++) {

@@ -37,7 +37,13 @@ $(CLOCK_BIN): test/clock_sync.cpp $(ENGINE_SOURCES)
 	@mkdir -p build/test
 	$(CXX) $(FLAGS) test/clock_sync.cpp $(ENGINE_SOURCES) -o $@
 
-.PHONY: run asan clock clean
+MODES_BIN := build/test/mode_switch
+
+$(MODES_BIN): test/mode_switch.cpp $(ENGINE_SOURCES)
+	@mkdir -p build/test
+	$(CXX) $(FLAGS) test/mode_switch.cpp $(ENGINE_SOURCES) -o $@
+
+.PHONY: run asan clock modes clean
 run: $(BIN)
 	./$(BIN) $(ARGS)
 
@@ -46,6 +52,9 @@ asan: $(ASAN_BIN)
 
 clock: $(CLOCK_BIN)
 	./$(CLOCK_BIN) $(ARGS)
+
+modes: $(MODES_BIN)
+	./$(MODES_BIN) $(ARGS)
 
 clean:
 	rm -rf build/test
